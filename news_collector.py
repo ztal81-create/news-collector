@@ -14,7 +14,7 @@ def send_telegram(text: str):
             url,
             data={
                 "chat_id": TELEGRAM_CHAT_ID,
-                "text": text[:4000],
+                "text": text[:156804977],
                 "parse_mode": "HTML",
                 "disable_web_page_preview": False
             },
