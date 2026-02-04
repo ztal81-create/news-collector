@@ -1,43 +1,87 @@
-name: News Collector
+import os
+import requests
+from bs4 import BeautifulSoup
 
-on:
-  workflow_dispatch:
-  schedule:
-    - cron: '*/15 * * * *'
+# --- Конфигурация ---
+URL = "https://news.ycombinator.com/newest"
+HISTORY_FILE = "sent_news.txt"
 
-jobs:
-  collect:
-    runs-on: ubuntu-latest
-    # Даем GitHub Actions разрешение пушить изменения в репозиторий
-    permissions:
-      contents: write
-      
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-      
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.11'
-      
-      - name: Install dependencies
-        run: pip install requests beautifulsoup4 lxml
-      
-      - name: Run collector
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python news_collector.py
-      
-      - name: Commit and push changes
-        run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git add sent_news.txt || exit 0
-          if git diff --staged --quiet; then
-            echo "No new news to commit."
-          else
-            git commit -m "Update sent news history [skip ci]"
-            git push
-          fi
+# Настройки Telegram из GitHub Secrets
+BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
+
+def load_history():
+    """Загружает список уже отправленных ссылок из файла."""
+    if os.path.exists(HISTORY_FILE):
+        with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+            return set(line.strip() for line in f)
+    return set()
+
+def save_to_history(link):
+    """Добавляет новую ссылку в файл истории."""
+    with open(HISTORY_FILE, "a", encoding="utf-8") as f:
+        f.write(link + "\n")
+
+def send_telegram_message(message):
+    """Отправляет сообщение в Telegram."""
+    if not BOT_TOKEN or not CHAT_ID:
+        print("Ошибка: Токен или ID чата не настроены.")
+        return
+
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": CHAT_ID,
+        "text": message,
+        "parse_mode": "HTML"
+    }
+    
+    try:
+        response = requests.post(url, json=payload)
+        response.raise_for_status()
+    except Exception as e:
+        print(f"Ошибка при отправке в Telegram: {e}")
+
+def collect_news():
+    print(f"Запуск парсера для {URL}...")
+    sent_links = load_history()
+    new_items_found = 0
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
+    }
+
+    try:
+        response = requests.get(URL, headers=headers, timeout=10)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.text, "lxml")
+
+        # Находим все элементы новостей (для Hacker News это tr с классом athing)
+        items = soup.select("tr.athing")
+
+        # Обрабатываем последние 10 новостей, чтобы не спамить при первом запуске
+        for item in items[:10]:
+            title_element = item.select_one(".titleline > a")
+            if not title_element:
+                continue
+
+            title = title_element.text
+            link = title_element['href']
+
+            # Если ссылки нет в истории, отправляем её
+            if link not in sent_links:
+                print(f"Новая новость: {title}")
+                message = f"<b>🆕 {title}</b>\n\n🔗 <a href='{link}'>Читать далее</a>"
+                
+                send_telegram_message(message)
+                save_to_history(link)
+                new_items_found += 1
+            else:
+                print(f"Пропущено (уже было): {title[:30]}...")
+
+        print(f"Готово. Отправлено новых новостей: {new_items_found}")
+
+    except Exception as e:
+        print(f"Общая ошибка скрипта: {e}")
+
+if __name__ == "__main__":
+    collect_news()
