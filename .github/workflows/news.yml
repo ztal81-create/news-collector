@@ -1,26 +1,94 @@
-name: News Collector
+import os
+import requests
+from bs4 import BeautifulSoup
+from datetime import datetime, timedelta, timezone
 
-on:
-  workflow_dispatch:
-  schedule:
-    - cron: '*/15 * * * *'
+# --- Configuration ---
+# Target URL
+URL = "https://news.ycombinator.com/newest" 
 
-jobs:
-  collect:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.11'
-      
-      - name: Install dependencies
-        run: pip install requests beautifulsoup4 lxml
-      
-      - name: Run collector
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python news_collector.py
+# Telegram Settings (Loaded from GitHub Secrets)
+BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
+
+def send_telegram_message(message):
+    """Sends a message to the specified Telegram chat."""
+    if not BOT_TOKEN or not CHAT_ID:
+        print("Error: Telegram credentials not found in environment variables.")
+        return
+
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": CHAT_ID,
+        "text": message,
+        "parse_mode": "HTML",
+        "disable_web_page_preview": False
+    }
+    
+    try:
+        response = requests.post(url, json=payload)
+        response.raise_for_status()
+        print(f"Sent: {message[:50]}...")
+    except Exception as e:
+        print(f"Failed to send message: {e}")
+
+def collect_news():
+    print(f"Checking news at {URL}...")
+    
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+    }
+    
+    try:
+        response = requests.get(URL, headers=headers)
+        response.raise_for_status()
+        
+        # 'lxml' is faster and more lenient than default html.parser
+        soup = BeautifulSoup(response.text, "lxml") 
+        
+        # --- CUSTOMIZE SELECTORS BELOW FOR YOUR TARGET SITE ---
+        # Example logic for Hacker News "newest"
+        # We look for items posted in the last 20 minutes (giving a 5 min buffer to the cron)
+        
+        news_items = soup.select("tr.athing")
+        
+        count = 0
+        for item in news_items:
+            # Extract basic info
+            title_element = item.select_one(".titleline > a")
+            if not title_element: continue
+            
+            title = title_element.text
+            link = title_element['href']
+            
+            # Extract timestamp (This is crucial for stateless runners)
+            # Find the sibling row that contains metadata
+            meta_row = item.find_next_sibling("tr")
+            if not meta_row: continue
+            
+            age_element = meta_row.select_one(".age")
+            if not age_element: continue
+            
+            age_text = age_element.text # e.g., "0 minutes ago", "1 hour ago"
+            
+            # LOGIC: Only send if it says "0 minutes ago", "X minutes ago" 
+            # and X is < 16. This prevents sending old news.
+            if "minute" in age_text:
+                try:
+                    minutes_ago = int(age_text.split()[0])
+                    if minutes_ago <= 16: # 15 min cron + 1 min buffer
+                        message = f"🚨 <b>New Story:</b>\n{title}\n\n🔗 {link}"
+                        send_telegram_message(message)
+                        count += 1
+                except ValueError:
+                    pass
+                    
+        print(f"Job finished. Sent {count} notifications.")
+
+    except Exception as e:
+        print(f"Error scraping: {e}")
+        # Optional: Send error log to Telegram so you know the bot crashed
+        # send_telegram_message(f"⚠️ Bot Error: {e}")
+
+if __name__ == "__main__":
+    collect_news()
