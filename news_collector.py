@@ -2,64 +2,64 @@ import os
 import requests
 from bs4 import BeautifulSoup
 
-# Секреты из GitHub Actions
-TELEGRAM_BOT_TOKEN = os.environ['TELEGRAM_BOT_TOKEN']
-TELEGRAM_CHAT_ID = os.environ['TELEGRAM_CHAT_ID']
+# Настройки
+URL = "https://news.ycombinator.com/newest"
+HISTORY_FILE = "sent_news.txt"
+BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
+def load_history():
+    if os.path.exists(HISTORY_FILE):
+        with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+            return set(line.strip() for line in f)
+    return set()
 
-def send_telegram(text: str):
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+def save_to_history(link):
+    with open(HISTORY_FILE, "a", encoding="utf-8") as f:
+        f.write(link + "\n")
+
+def send_telegram(message):
+    if not BOT_TOKEN or not CHAT_ID:
+        return
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     try:
-        requests.post(
-            url,
-            data={
-                "chat_id": TELEGRAM_CHAT_ID,
-                "text": text[:156804977],
-                "parse_mode": "HTML",
-                "disable_web_page_preview": False
-            },
-            timeout=10
-        )
+        requests.post(url, json={
+            "chat_id": CHAT_ID,
+            "text": message,
+            "parse_mode": "HTML"
+        }, timeout=10)
     except Exception as e:
-        print(f"Telegram error: {e}")
+        print(f"Ошибка отправки: {e}")
 
-
-# Загружаем список сайтов
-try:
-    with open("sites.txt", "r", encoding="utf-8") as f:
-        sites = [line.strip() for line in f if line.strip()]
-except FileNotFoundError:
-    send_telegram("❌ Файл sites.txt не найден")
-    raise SystemExit
-
-
-news = []
-
-for url in sites[:5]:  # ограничение для стабильности
+def main():
+    sent_links = load_history()
+    headers = {"User-Agent": "Mozilla/5.0"}
+    
     try:
-        response = requests.get(
-            url,
-            headers={"User-Agent": "Mozilla/5.0"},
-            timeout=15
-        )
-
+        response = requests.get(URL, headers=headers, timeout=10)
         soup = BeautifulSoup(response.text, "lxml")
+        items = soup.select("tr.athing")
 
-        headlines = soup.find_all(["h1", "h2", "h3"], limit=3)
+        new_count = 0
+        # Проверяем первые 10 свежих записей
+        for item in items[:10]:
+            link_tag = item.select_one(".titleline > a")
+            if not link_tag:
+                continue
+            
+            title = link_tag.text
+            link = link_tag['href']
 
-        for h in headlines:
-            text = h.get_text(strip=True)
-            if 20 < len(text) < 150:
-                news.append(f"📰 {text}\n🔗 {url}")
+            if link not in sent_links:
+                msg = f"<b>🆕 {title}</b>\n\n🔗 {link}"
+                send_telegram(msg)
+                save_to_history(link)
+                new_count += 1
+        
+        print(f"Найдено новых новостей: {new_count}")
 
     except Exception as e:
-        print(f"Error loading {url}: {e}")
+        print(f"Ошибка парсинга: {e}")
 
-
-if news:
-    send_telegram(f"✅ Найдено новостей: {len(news)}")
-    for item in news[:5]:
-        send_telegram(item)
-else:
-    send_telegram("Новых новостей нет")
-
+if __name__ == "__main__":
+    main()
